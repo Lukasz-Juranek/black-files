@@ -25,7 +25,8 @@ class Entry(val file: File, val isDir: Boolean, val size: Long, val modified: Lo
 
 class Root(val label: String, val dir: File, val details: String)
 
-enum class Sort(val label: String) { NAME("name"), DATE("date"), SIZE("size") }
+/** [newestFirst] is the direction a sort starts in when picked: A→Z for names, newest/biggest first otherwise. */
+enum class Sort(val label: String, val newestFirst: Boolean) { NAME("Name", false), DATE("Date", true), SIZE("Size", true) }
 
 fun toast(c: Context, message: String) = Toast.makeText(c, message, Toast.LENGTH_SHORT).show()
 
@@ -50,7 +51,7 @@ object Storage {
             }
 
     /** Folders first, then files, in the chosen order. */
-    fun list(dir: File, showHidden: Boolean, sort: Sort): List<Entry> {
+    fun list(dir: File, showHidden: Boolean, sort: Sort, descending: Boolean): List<Entry> {
         val dates = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
         val entries = (dir.listFiles() ?: emptyArray())
             .filter { showHidden || !it.name.startsWith(".") }
@@ -68,10 +69,10 @@ object Storage {
         val byName = compareBy<Entry, String>(String.CASE_INSENSITIVE_ORDER) { it.name }
         val order = when (sort) {
             Sort.NAME -> byName
-            Sort.DATE -> compareByDescending<Entry> { it.modified }.then(byName)
-            Sort.SIZE -> compareByDescending<Entry> { it.size }.then(byName)
+            Sort.DATE -> compareBy<Entry> { it.modified }.then(byName)
+            Sort.SIZE -> compareBy<Entry> { it.size }.then(byName)
         }
-        return entries.sortedWith(compareBy<Entry> { !it.isDir }.then(order))
+        return entries.sortedWith(compareBy<Entry> { !it.isDir }.then(if (descending) order.reversed() else order))
     }
 
     fun mkdir(parent: File, name: String) {

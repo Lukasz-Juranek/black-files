@@ -105,6 +105,7 @@ private fun Browser() {
     var dir by remember { mutableStateOf(Prefs.lastPath(ctx)?.let(::File)?.takeIf { it.isDirectory }) }
     var showHidden by remember { mutableStateOf(Prefs.showHidden(ctx)) }
     var sort by remember { mutableStateOf(Prefs.sort(ctx)) }
+    var descending by remember { mutableStateOf(Prefs.sortDescending(ctx)) }
     var reload by remember { mutableIntStateOf(0) }
     var entries by remember { mutableStateOf<List<Entry>?>(null) }
     var entriesDir by remember { mutableStateOf<File?>(null) }
@@ -121,10 +122,10 @@ private fun Browser() {
     val positions = remember { mutableMapOf<String?, Int>() }
     val listState = remember(dir) { LazyListState(positions[dir?.path] ?: 0) }
 
-    LaunchedEffect(dir, showHidden, sort, reload) {
+    LaunchedEffect(dir, showHidden, sort, descending, reload) {
         val d = dir
         Prefs.setLastPath(ctx, d?.path)
-        entries = if (d == null) null else withContext(Dispatchers.IO) { Storage.list(d, showHidden, sort) }
+        entries = if (d == null) null else withContext(Dispatchers.IO) { Storage.list(d, showHidden, sort, descending) }
         entriesDir = d
     }
 
@@ -147,6 +148,13 @@ private fun Browser() {
             result.exceptionOrNull()?.let { toast(ctx, "$action failed: ${it.message ?: it.javaClass.simpleName}") }
             reload++
         }
+    }
+
+    // Picking the current sort flips its direction; picking another starts in its natural direction.
+    fun sortBy(s: Sort) {
+        descending = if (s == sort) !descending else s.newestFirst
+        sort = s
+        Prefs.setSort(ctx, sort, descending)
     }
 
     fun findDuplicates(root: File) {
@@ -219,11 +227,12 @@ private fun Browser() {
                                 run("New folder") { Storage.mkdir(d, name) }
                             }
                         })
-                        DropdownMenuItem(text = { Text("Find duplicates") }, onClick = {
-                            menuOpen = false
-                            findDuplicates(d)
-                        })
                     }
+                    // On the storage list this scans the whole internal storage.
+                    DropdownMenuItem(text = { Text("Find duplicates") }, onClick = {
+                        menuOpen = false
+                        (d ?: roots.firstOrNull()?.dir)?.let(::findDuplicates)
+                    })
                     DropdownMenuItem(
                         text = { Text(if (showHidden) "Hide hidden files" else "Show hidden files") },
                         onClick = {
@@ -232,16 +241,34 @@ private fun Browser() {
                             Prefs.setShowHidden(ctx, showHidden)
                         }
                     )
-                    // Stays open so you can tap through the orders.
-                    DropdownMenuItem(text = { Text("Sort by ${sort.label}") }, onClick = {
-                        sort = Sort.entries[(sort.ordinal + 1) % Sort.entries.size]
-                        Prefs.setSort(ctx, sort)
-                    })
                     DropdownMenuItem(
                         text = { Text("Version ${BuildConfig.VERSION_NAME}", color = Dim) },
                         onClick = {}, enabled = false
                     )
                 }
+            }
+        }
+        dir?.let { d ->
+            Row(
+                Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Sort.entries.forEach { s ->
+                    val active = s == sort
+                    Text(
+                        s.label + if (active) (if (descending) " ↓" else " ↑") else "",
+                        Modifier.clickable { sortBy(s) }.padding(horizontal = 12.dp, vertical = 8.dp),
+                        fontSize = 14.sp,
+                        color = if (active) Color.White else Dim,
+                        fontWeight = if (active) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "Duplicates",
+                    Modifier.clickable { findDuplicates(d) }.padding(horizontal = 12.dp, vertical = 8.dp),
+                    fontSize = 14.sp, color = Dim
+                )
             }
         }
         HorizontalDivider(color = Faint)
@@ -296,6 +323,12 @@ private fun Browser() {
                                     DropdownMenuItem(text = { Text("Extract here") }, onClick = {
                                         actionsFor = null
                                         run("Extract", "Extracting ${f.name}…") { Archives.extract(f) }
+                                    })
+                                }
+                                if (e.isDir) {
+                                    DropdownMenuItem(text = { Text("Find duplicates here") }, onClick = {
+                                        actionsFor = null
+                                        findDuplicates(f)
                                     })
                                 }
                                 DropdownMenuItem(text = { Text("Copy") }, onClick = {

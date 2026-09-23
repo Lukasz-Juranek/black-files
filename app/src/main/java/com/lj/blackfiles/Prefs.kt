@@ -14,5 +14,7 @@ object Prefs {
     fun setShowHidden(c: Context, on: Boolean) = sp(c).edit { putBoolean("hidden", on) }
 
     fun sort(c: Context): Sort = Sort.entries.firstOrNull { it.name == sp(c).getString("sort", null) } ?: Sort.NAME
-    fun setSort(c: Context, sort: Sort) = sp(c).edit { putString("sort", sort.name) }
+    fun sortDescending(c: Context) = sp(c).getBoolean("desc", false)
+    fun setSort(c: Context, sort: Sort, descending: Boolean) =
+        sp(c).edit { putString("sort", sort.name); putBoolean("desc", descending) }
 }

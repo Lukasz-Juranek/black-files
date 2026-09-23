@@ -27,6 +27,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -35,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -55,7 +57,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
@@ -78,11 +79,15 @@ fun FilesTheme(content: @Composable () -> Unit) {
             surfaceContainer = Panel, surfaceContainerHigh = Panel, surfaceContainerHighest = Panel,
             outline = Dim,
         ),
-        content = content
-    )
+    ) {
+        // Text and icons without an explicit colour default to this; otherwise they'd be black on black.
+        CompositionLocalProvider(LocalContentColor provides Color.White, content = content)
+    }
 }
 
-private class Clip(val file: File, val move: Boolean)
+private class Clip(val files: List<File>, val move: Boolean) {
+    val label get() = files.singleOrNull()?.name ?: "${files.size} items"
+}
 
 private class DupeScan(val root: File, val groups: List<Duplicates.Group>)
 
@@ -109,11 +114,12 @@ private fun Browser() {
     var reload by remember { mutableIntStateOf(0) }
     var entries by remember { mutableStateOf<List<Entry>?>(null) }
     var entriesDir by remember { mutableStateOf<File?>(null) }
+    var selected by remember { mutableStateOf(emptySet<File>()) }
     var clip by remember { mutableStateOf<Clip?>(null) }
     var menuOpen by remember { mutableStateOf(false) }
-    var actionsFor by remember { mutableStateOf<File?>(null) }
+    var selectionMenuOpen by remember { mutableStateOf(false) }
     var nameRequest by remember { mutableStateOf<NameRequest?>(null) }
-    var deleting by remember { mutableStateOf<File?>(null) }
+    var deleting by remember { mutableStateOf<List<File>?>(null) }
     var busy by remember { mutableStateOf<String?>(null) }
     var dupes by remember { mutableStateOf<DupeScan?>(null) }
     var dupeSelection by remember { mutableStateOf(emptySet<File>()) }
@@ -131,13 +137,17 @@ private fun Browser() {
 
     fun go(to: File?) {
         positions[dir?.path] = listState.firstVisibleItemIndex
-        actionsFor = null
+        selected = emptySet()
         dir = to
     }
 
     fun up() {
         val d = dir ?: return
         go(if (roots.any { it.dir == d }) null else d.parentFile)
+    }
+
+    fun toggle(f: File) {
+        selected = if (f in selected) selected - f else selected + f
     }
 
     fun run(action: String, working: String = "Working…", block: () -> Unit) {
@@ -149,6 +159,14 @@ private fun Browser() {
             reload++
         }
     }
+
+    /** Runs [op] on each file, carrying on past failures and reporting how many failed. */
+    fun runEach(action: String, working: String, files: List<File>, op: (File) -> Unit) =
+        run(action, working) {
+            val failures = files.mapNotNull { f -> runCatching { op(f) }.exceptionOrNull() }
+            if (failures.size == 1) throw failures[0]
+            check(failures.isEmpty()) { "${failures.size} of ${files.size} items: ${failures[0].message}" }
+        }
 
     // Picking the current sort flips its direction; picking another starts in its natural direction.
     fun sortBy(s: Sort) {
@@ -177,6 +195,8 @@ private fun Browser() {
     }
 
     BackHandler(enabled = dir != null && dupes == null) { up() }
+    // Registered last, so while something is selected Back clears the selection first.
+    BackHandler(enabled = selected.isNotEmpty() && dupes == null) { selected = emptySet() }
 
     val scan = dupes
     if (scan != null) {
@@ -185,70 +205,79 @@ private fun Browser() {
             onToggle = { f -> dupeSelection = if (f in dupeSelection) dupeSelection - f else dupeSelection + f },
             onClose = { dupes = null },
             onDelete = {
-                val doomed = dupeSelection
+                val doomed = dupeSelection.toList()
                 dupes = null
-                run("Delete", "Deleting ${doomed.size} files…") {
-                    val failed = doomed.count { !it.delete() }
-                    check(failed == 0) { "$failed files couldn't be deleted" }
-                }
+                runEach("Delete", "Deleting ${doomed.size} files…", doomed) { check(it.delete()) { "can't delete ${it.name}" } }
             }
         )
         return
     }
+
+    val d = dir
+    val list = entries.takeIf { entriesDir == d }
+    val selecting = selected.isNotEmpty()
 
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            val d = dir
-            if (d != null) {
-                IconButton(onClick = ::up) { Icon(painterResource(R.drawable.ic_up), "Up") }
-            } else {
-                Spacer(Modifier.width(16.dp))
-            }
-            Column(Modifier.weight(1f)) {
-                Text(
-                    d?.let { roots.firstOrNull { r -> r.dir == d }?.label ?: d.name } ?: "Black Files",
-                    fontSize = 20.sp, fontWeight = FontWeight.Bold,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis
-                )
-                if (d != null) {
-                    Text(d.path, fontSize = 12.sp, color = Dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (selecting) {
+                IconButton(onClick = { selected = emptySet() }) { Icon(painterResource(R.drawable.ic_close), "Clear selection") }
+                Text("${selected.size} selected", Modifier.weight(1f), fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                val all = list.orEmpty().map { it.file }.toSet()
+                TextButton(onClick = { selected = if (selected == all) emptySet() else all }) {
+                    Text(if (selected == all) "None" else "All")
                 }
-            }
-            Box {
-                IconButton(onClick = { menuOpen = true }) { Icon(painterResource(R.drawable.ic_more), "Menu") }
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            } else {
+                if (d != null) {
+                    IconButton(onClick = ::up) { Icon(painterResource(R.drawable.ic_up), "Up") }
+                } else {
+                    Spacer(Modifier.width(16.dp))
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        d?.let { roots.firstOrNull { r -> r.dir == d }?.label ?: d.name } ?: "Black Files",
+                        fontSize = 20.sp, fontWeight = FontWeight.Bold,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis
+                    )
                     if (d != null) {
-                        DropdownMenuItem(text = { Text("New folder") }, onClick = {
-                            menuOpen = false
-                            nameRequest = NameRequest("New folder", "", true) { name ->
-                                run("New folder") { Storage.mkdir(d, name) }
-                            }
-                        })
+                        Text(d.path, fontSize = 12.sp, color = Dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
-                    // On the storage list this scans the whole internal storage.
-                    DropdownMenuItem(text = { Text("Find duplicates") }, onClick = {
-                        menuOpen = false
-                        (d ?: roots.firstOrNull()?.dir)?.let(::findDuplicates)
-                    })
-                    DropdownMenuItem(
-                        text = { Text(if (showHidden) "Hide hidden files" else "Show hidden files") },
-                        onClick = {
-                            menuOpen = false
-                            showHidden = !showHidden
-                            Prefs.setShowHidden(ctx, showHidden)
+                }
+                Box {
+                    IconButton(onClick = { menuOpen = true }) { Icon(painterResource(R.drawable.ic_more), "Menu") }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        if (d != null) {
+                            DropdownMenuItem(text = { Text("New folder") }, onClick = {
+                                menuOpen = false
+                                nameRequest = NameRequest("New folder", "", true) { name ->
+                                    run("New folder") { Storage.mkdir(d, name) }
+                                }
+                            })
                         }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Version ${BuildConfig.VERSION_NAME}", color = Dim) },
-                        onClick = {}, enabled = false
-                    )
+                        // On the storage list this scans the whole internal storage.
+                        DropdownMenuItem(text = { Text("Find duplicates") }, onClick = {
+                            menuOpen = false
+                            (d ?: roots.firstOrNull()?.dir)?.let(::findDuplicates)
+                        })
+                        DropdownMenuItem(
+                            text = { Text(if (showHidden) "Hide hidden files" else "Show hidden files") },
+                            onClick = {
+                                menuOpen = false
+                                showHidden = !showHidden
+                                Prefs.setShowHidden(ctx, showHidden)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Version ${BuildConfig.VERSION_NAME}", color = Dim) },
+                            onClick = {}, enabled = false
+                        )
+                    }
                 }
             }
         }
-        dir?.let { d ->
+        if (d != null) {
             Row(
                 Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -274,8 +303,6 @@ private fun Browser() {
         HorizontalDivider(color = Faint)
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            val d = dir
-            val list = entries.takeIf { entriesDir == d }
             when {
                 d == null -> LazyColumn(Modifier.fillMaxSize()) {
                     items(roots, key = { it.dir.path }) { root ->
@@ -297,73 +324,93 @@ private fun Browser() {
                 list.isEmpty() -> Text("Empty folder", Modifier.align(Alignment.Center), color = Dim)
                 else -> LazyColumn(Modifier.fillMaxSize(), state = listState) {
                     items(list, key = { it.file.path }) { e ->
-                        Box {
-                            EntryRow(
-                                e,
-                                onClick = { if (e.isDir) go(e.file) else Storage.open(ctx, e.file, chooser = false) },
-                                onLongClick = { actionsFor = e.file }
-                            )
-                            DropdownMenu(
-                                expanded = actionsFor == e.file,
-                                onDismissRequest = { actionsFor = null },
-                                offset = DpOffset(56.dp, 0.dp)
-                            ) {
-                                val f = e.file
-                                if (!e.isDir) {
-                                    DropdownMenuItem(text = { Text("Open with…") }, onClick = {
-                                        actionsFor = null
-                                        Storage.open(ctx, f, chooser = true)
-                                    })
-                                    DropdownMenuItem(text = { Text("Share") }, onClick = {
-                                        actionsFor = null
-                                        Storage.share(ctx, f)
-                                    })
+                        EntryRow(
+                            e,
+                            selection = if (selecting) e.file in selected else null,
+                            onClick = {
+                                when {
+                                    selecting -> toggle(e.file)
+                                    e.isDir -> go(e.file)
+                                    else -> Storage.open(ctx, e.file, chooser = false)
                                 }
-                                if (!e.isDir && Archives.isArchive(f)) {
-                                    DropdownMenuItem(text = { Text("Extract here") }, onClick = {
-                                        actionsFor = null
-                                        run("Extract", "Extracting ${f.name}…") { Archives.extract(f) }
-                                    })
-                                }
-                                if (e.isDir) {
-                                    DropdownMenuItem(text = { Text("Find duplicates here") }, onClick = {
-                                        actionsFor = null
-                                        findDuplicates(f)
-                                    })
-                                }
-                                DropdownMenuItem(text = { Text("Copy") }, onClick = {
-                                    actionsFor = null
-                                    clip = Clip(f, move = false)
+                            },
+                            onLongClick = { toggle(e.file) }
+                        )
+                    }
+                }
+            }
+        }
+
+        val c = clip
+        when {
+            selecting -> {
+                val files = list.orEmpty().filter { it.file in selected }
+                val single = files.singleOrNull()
+                HorizontalDivider(color = Faint)
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = {
+                        clip = Clip(selected.toList(), move = false)
+                        selected = emptySet()
+                    }) { Text("Copy") }
+                    TextButton(onClick = {
+                        clip = Clip(selected.toList(), move = true)
+                        selected = emptySet()
+                    }) { Text("Move") }
+                    TextButton(onClick = { deleting = selected.toList() }) { Text("Delete") }
+                    Spacer(Modifier.weight(1f))
+                    Box {
+                        IconButton(onClick = { selectionMenuOpen = true }) { Icon(painterResource(R.drawable.ic_more), "More") }
+                        DropdownMenu(expanded = selectionMenuOpen, onDismissRequest = { selectionMenuOpen = false }) {
+                            fun done() {
+                                selectionMenuOpen = false
+                                selected = emptySet()
+                            }
+                            if (files.isNotEmpty() && files.none { it.isDir }) {
+                                DropdownMenuItem(text = { Text("Share") }, onClick = {
+                                    Storage.share(ctx, files.map { it.file })
+                                    done()
                                 })
-                                DropdownMenuItem(text = { Text("Move") }, onClick = {
-                                    actionsFor = null
-                                    clip = Clip(f, move = true)
+                            }
+                            if (single != null && !single.isDir) {
+                                DropdownMenuItem(text = { Text("Open with…") }, onClick = {
+                                    Storage.open(ctx, single.file, chooser = true)
+                                    done()
                                 })
+                            }
+                            if (single != null && !single.isDir && Archives.isArchive(single.file)) {
+                                DropdownMenuItem(text = { Text("Extract here") }, onClick = {
+                                    done()
+                                    run("Extract", "Extracting ${single.name}…") { Archives.extract(single.file) }
+                                })
+                            }
+                            if (single != null && single.isDir) {
+                                DropdownMenuItem(text = { Text("Find duplicates here") }, onClick = {
+                                    done()
+                                    findDuplicates(single.file)
+                                })
+                            }
+                            if (single != null) {
                                 DropdownMenuItem(text = { Text("Rename") }, onClick = {
-                                    actionsFor = null
-                                    nameRequest = NameRequest("Rename", f.name, e.isDir) { name ->
-                                        run("Rename") { Storage.rename(f, name) }
+                                    done()
+                                    nameRequest = NameRequest("Rename", single.name, single.isDir) { name ->
+                                        run("Rename") { Storage.rename(single.file, name) }
                                     }
-                                })
-                                DropdownMenuItem(text = { Text("Delete") }, onClick = {
-                                    actionsFor = null
-                                    deleting = f
                                 })
                             }
                         }
                     }
                 }
             }
-        }
-
-        clip?.let { c ->
-            BottomBar("${if (c.move) "Move" else "Copy"} ${c.file.name}") {
+            c != null -> BottomBar("${if (c.move) "Move" else "Copy"} ${c.label}") {
                 TextButton(onClick = { clip = null }) { Text("Cancel") }
-                TextButton(enabled = dir != null, onClick = {
-                    val target = dir ?: return@TextButton
+                TextButton(enabled = d != null, onClick = {
+                    val target = d ?: return@TextButton
                     clip = null
-                    run(if (c.move) "Move" else "Copy", if (c.move) "Moving…" else "Copying…") {
-                        Storage.paste(c.file, target, c.move)
+                    runEach(if (c.move) "Move" else "Copy", if (c.move) "Moving…" else "Copying…", c.files) {
+                        Storage.paste(it, target, c.move)
                     }
                 }) { Text("Paste here") }
             }
@@ -379,21 +426,24 @@ private fun Browser() {
         }
     }
 
-    deleting?.let { f ->
+    deleting?.let { files ->
+        val one = files.singleOrNull()
         AlertDialog(
             onDismissRequest = { deleting = null },
             containerColor = Panel,
-            title = { Text("Delete ${f.name}?") },
+            title = { Text(if (one != null) "Delete ${one.name}?" else "Delete ${files.size} items?") },
             text = {
                 Text(
-                    if (f.isDirectory) "The folder and everything in it will be deleted." else "This can't be undone.",
+                    if (files.any { it.isDirectory }) "Folders are deleted with everything in them. This can't be undone."
+                    else "This can't be undone.",
                     color = Dim
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
                     deleting = null
-                    run("Delete", "Deleting…") { Storage.delete(f) }
+                    selected = emptySet()
+                    runEach("Delete", "Deleting…", files) { Storage.delete(it) }
                 }) { Text("Delete") }
             },
             dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } }
@@ -401,18 +451,25 @@ private fun Browser() {
     }
 }
 
+/** [selection] is null outside selection mode, otherwise whether this row is ticked. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun EntryRow(e: Entry, onClick: () -> Unit, onLongClick: () -> Unit) {
+private fun EntryRow(e: Entry, selection: Boolean?, onClick: () -> Unit, onLongClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth()
+            .background(if (selection == true) Faint else Color.Transparent)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        val icon = when (selection) {
+            true -> R.drawable.ic_checked
+            false -> R.drawable.ic_unchecked
+            null -> if (e.isDir) R.drawable.ic_folder else R.drawable.ic_file
+        }
         Icon(
-            painterResource(if (e.isDir) R.drawable.ic_folder else R.drawable.ic_file), null,
-            Modifier.size(22.dp), tint = if (e.isDir) Color.White else Dim
+            painterResource(icon), null,
+            Modifier.size(22.dp), tint = if (e.isDir || selection == true) Color.White else Dim
         )
         Spacer(Modifier.width(18.dp))
         Column(Modifier.weight(1f)) {
@@ -489,7 +546,7 @@ private fun DuplicatesView(
                         Column(Modifier.weight(1f)) {
                             Text(f.name, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(
-                                f.parentFile?.relativeTo(scan.root)?.path?.ifEmpty { null } ?: "this folder",
+                                "in " + (f.parentFile?.relativeTo(scan.root)?.path?.ifEmpty { null } ?: scan.root.name),
                                 fontSize = 12.sp, color = Dim, maxLines = 1, overflow = TextOverflow.Ellipsis
                             )
                         }

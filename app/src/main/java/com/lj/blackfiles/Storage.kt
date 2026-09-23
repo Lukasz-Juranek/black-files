@@ -123,13 +123,19 @@ object Storage {
         launch(c, if (chooser) Intent.createChooser(intent, "Open with") else intent)
     }
 
-    fun share(c: Context, file: File) {
-        val uri = uri(c, file)
-        val intent = Intent(Intent.ACTION_SEND)
-            .setType(mime(file))
-            .putExtra(Intent.EXTRA_STREAM, uri)
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        intent.clipData = ClipData.newRawUri(file.name, uri)
+    fun share(c: Context, files: List<File>) {
+        val uris = files.map { uri(c, it) }
+        val types = files.map(::mime).distinct()
+        val intent = if (uris.size == 1) {
+            Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_STREAM, uris[0])
+        } else {
+            Intent(Intent.ACTION_SEND_MULTIPLE).putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+        }
+        intent.setType(types.singleOrNull() ?: "*/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        // The chooser only passes read access on for URIs in clipData.
+        intent.clipData = ClipData.newRawUri(files[0].name, uris[0]).apply {
+            uris.drop(1).forEach { addItem(ClipData.Item(it)) }
+        }
         launch(c, Intent.createChooser(intent, null))
     }
 

@@ -3,8 +3,10 @@
 A minimal black Android file explorer.
 
 - Browse internal storage and SD cards, with folders listed first
-- Tap a file to open it. Long-press for Open with, Share, Copy, Move, Rename and Delete
-- **Extract here** for `.zip`, `.tar`, `.tar.gz` and `.tgz`. It extracts into a new folder named after the archive
+- Tap a file to open it
+- **Long-press to select.** Tap more files or folders, or use **All**, then **Copy**, **Move** or **Delete**. The ⋮ menu there has
+  Share, Open with, Rename, Extract here and Find duplicates here
+- **Extract here** (select an archive, then ⋮) for `.zip`, `.tar`, `.tar.gz` and `.tgz`. It extracts into a new folder named after the archive
 - **Duplicates** (in the bar under the title, **⋮**, or long-press a folder) scans the current folder and its subfolders for files that have the same size and a
   similar name, like `photo.jpg`, `photo (1).jpg`, `photo - Copy.jpg`, `photo_2.jpg` or `Kopia photo.jpg`. The copies come pre-ticked
   and you review the list before anything is deleted

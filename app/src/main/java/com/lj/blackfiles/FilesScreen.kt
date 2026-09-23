@@ -113,8 +113,6 @@ private fun Browser() {
     var actionsFor by remember { mutableStateOf<File?>(null) }
     var nameRequest by remember { mutableStateOf<NameRequest?>(null) }
     var deleting by remember { mutableStateOf<File?>(null) }
-    var update by remember { mutableStateOf<Updater.Release?>(null) }
-    var progress by remember { mutableStateOf<Float?>(null) }
     var busy by remember { mutableStateOf<String?>(null) }
     var dupes by remember { mutableStateOf<DupeScan?>(null) }
     var dupeSelection by remember { mutableStateOf(emptySet<File>()) }
@@ -128,11 +126,6 @@ private fun Browser() {
         Prefs.setLastPath(ctx, d?.path)
         entries = if (d == null) null else withContext(Dispatchers.IO) { Storage.list(d, showHidden, sort) }
         entriesDir = d
-    }
-
-    // Quiet check on launch; the bottom bar appears only when there's something newer.
-    LaunchedEffect(Unit) {
-        update = runCatching { Updater.latest() }.getOrNull()?.takeIf { it.isNewer }
     }
 
     fun go(to: File?) {
@@ -172,24 +165,6 @@ private fun Browser() {
                     }
                 }
                 .onFailure { toast(ctx, "Duplicate search failed: ${it.message}") }
-        }
-    }
-
-    fun checkUpdate() {
-        scope.launch {
-            runCatching { Updater.latest() }
-                .onSuccess { if (it.isNewer) update = it else toast(ctx, "You have the latest version") }
-                .onFailure { toast(ctx, "Couldn't check for updates") }
-        }
-    }
-
-    fun installUpdate(release: Updater.Release) {
-        if (progress != null) return
-        scope.launch {
-            progress = 0f
-            val apk = runCatching { Updater.download(ctx, release) { progress = it } }
-            progress = null
-            apk.onSuccess { Updater.install(ctx, it) }.onFailure { toast(ctx, "Download failed") }
         }
     }
 
@@ -261,10 +236,6 @@ private fun Browser() {
                     DropdownMenuItem(text = { Text("Sort by ${sort.label}") }, onClick = {
                         sort = Sort.entries[(sort.ordinal + 1) % Sort.entries.size]
                         Prefs.setSort(ctx, sort)
-                    })
-                    DropdownMenuItem(text = { Text("Check for updates") }, onClick = {
-                        menuOpen = false
-                        checkUpdate()
                     })
                     DropdownMenuItem(
                         text = { Text("Version ${BuildConfig.VERSION_NAME}", color = Dim) },
@@ -366,15 +337,6 @@ private fun Browser() {
         }
 
         busy?.let { BottomBar(it) {} }
-
-        update?.let { r ->
-            BottomBar("Update ${r.version} available") {
-                TextButton(onClick = { update = null }) { Text("Later") }
-                TextButton(enabled = progress == null, onClick = { installUpdate(r) }) {
-                    Text(progress?.let { "${(it * 100).toInt()}%" } ?: "Install")
-                }
-            }
-        }
     }
 
     nameRequest?.let { req ->

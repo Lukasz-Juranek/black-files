@@ -17,9 +17,6 @@ android {
         targetSdk = 35
         versionCode = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
         versionName = "1.0.${System.getenv("GITHUB_RUN_NUMBER") ?: "0"}"
-        // The in-app updater reads the latest GitHub release of this repo.
-        val repo = System.getenv("GITHUB_REPOSITORY") ?: "Lukasz-Juranek/black-files"
-        buildConfigField("String", "UPDATE_REPO", "\"$repo\"")
     }
 
     signingConfigs {

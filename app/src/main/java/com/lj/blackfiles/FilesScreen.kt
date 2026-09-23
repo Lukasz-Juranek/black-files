@@ -84,6 +84,8 @@ fun FilesTheme(content: @Composable () -> Unit) {
 
 private class Clip(val file: File, val move: Boolean)
 
+private class DupeScan(val root: File, val groups: List<Duplicates.Group>)
+
 private class NameRequest(val title: String, val initial: String, val isDir: Boolean, val onDone: (String) -> Unit)
 
 @Composable
@@ -113,6 +115,9 @@ private fun Browser() {
     var deleting by remember { mutableStateOf<File?>(null) }
     var update by remember { mutableStateOf<Updater.Release?>(null) }
     var progress by remember { mutableStateOf<Float?>(null) }
+    var busy by remember { mutableStateOf<String?>(null) }
+    var dupes by remember { mutableStateOf<DupeScan?>(null) }
+    var dupeSelection by remember { mutableStateOf(emptySet<File>()) }
 
     // Scroll position per folder, so going back up lands where you were.
     val positions = remember { mutableMapOf<String?, Int>() }
@@ -141,11 +146,32 @@ private fun Browser() {
         go(if (roots.any { it.dir == d }) null else d.parentFile)
     }
 
-    fun run(action: String, block: () -> Unit) {
+    fun run(action: String, working: String = "Working…", block: () -> Unit) {
         scope.launch {
+            busy = working
             val result = withContext(Dispatchers.IO) { runCatching(block) }
+            busy = null
             result.exceptionOrNull()?.let { toast(ctx, "$action failed: ${it.message ?: it.javaClass.simpleName}") }
             reload++
+        }
+    }
+
+    fun findDuplicates(root: File) {
+        scope.launch {
+            busy = "Looking for duplicates…"
+            val result = withContext(Dispatchers.IO) { runCatching { Duplicates.find(root, showHidden) } }
+            busy = null
+            result
+                .onSuccess { groups ->
+                    if (groups.isEmpty()) {
+                        toast(ctx, "No duplicates found")
+                    } else {
+                        // Everything except the first (kept) file of each group starts ticked.
+                        dupeSelection = groups.flatMap { it.files.drop(1) }.toSet()
+                        dupes = DupeScan(root, groups)
+                    }
+                }
+                .onFailure { toast(ctx, "Duplicate search failed: ${it.message}") }
         }
     }
 
@@ -167,7 +193,25 @@ private fun Browser() {
         }
     }
 
-    BackHandler(enabled = dir != null) { up() }
+    BackHandler(enabled = dir != null && dupes == null) { up() }
+
+    val scan = dupes
+    if (scan != null) {
+        DuplicatesView(
+            scan, dupeSelection,
+            onToggle = { f -> dupeSelection = if (f in dupeSelection) dupeSelection - f else dupeSelection + f },
+            onClose = { dupes = null },
+            onDelete = {
+                val doomed = dupeSelection
+                dupes = null
+                run("Delete", "Deleting ${doomed.size} files…") {
+                    val failed = doomed.count { !it.delete() }
+                    check(failed == 0) { "$failed files couldn't be deleted" }
+                }
+            }
+        )
+        return
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -199,6 +243,10 @@ private fun Browser() {
                             nameRequest = NameRequest("New folder", "", true) { name ->
                                 run("New folder") { Storage.mkdir(d, name) }
                             }
+                        })
+                        DropdownMenuItem(text = { Text("Find duplicates") }, onClick = {
+                            menuOpen = false
+                            findDuplicates(d)
                         })
                     }
                     DropdownMenuItem(
@@ -273,6 +321,12 @@ private fun Browser() {
                                         Storage.share(ctx, f)
                                     })
                                 }
+                                if (!e.isDir && Archives.isArchive(f)) {
+                                    DropdownMenuItem(text = { Text("Extract here") }, onClick = {
+                                        actionsFor = null
+                                        run("Extract", "Extracting ${f.name}…") { Archives.extract(f) }
+                                    })
+                                }
                                 DropdownMenuItem(text = { Text("Copy") }, onClick = {
                                     actionsFor = null
                                     clip = Clip(f, move = false)
@@ -304,10 +358,14 @@ private fun Browser() {
                 TextButton(enabled = dir != null, onClick = {
                     val target = dir ?: return@TextButton
                     clip = null
-                    run(if (c.move) "Move" else "Copy") { Storage.paste(c.file, target, c.move) }
+                    run(if (c.move) "Move" else "Copy", if (c.move) "Moving…" else "Copying…") {
+                        Storage.paste(c.file, target, c.move)
+                    }
                 }) { Text("Paste here") }
             }
         }
+
+        busy?.let { BottomBar(it) {} }
 
         update?.let { r ->
             BottomBar("Update ${r.version} available") {
@@ -340,7 +398,7 @@ private fun Browser() {
             confirmButton = {
                 TextButton(onClick = {
                     deleting = null
-                    run("Delete") { Storage.delete(f) }
+                    run("Delete", "Deleting…") { Storage.delete(f) }
                 }) { Text("Delete") }
             },
             dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } }
@@ -381,6 +439,92 @@ private fun BottomBar(label: String, buttons: @Composable () -> Unit) {
     ) {
         Text(label, Modifier.weight(1f), color = Dim, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         buttons()
+    }
+}
+
+@Composable
+private fun DuplicatesView(
+    scan: DupeScan,
+    selected: Set<File>,
+    onToggle: (File) -> Unit,
+    onClose: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    var confirming by remember { mutableStateOf(false) }
+    val bytes = scan.groups.sumOf { g -> g.size * g.files.count { it in selected } }
+    BackHandler(onBack = onClose)
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onClose) { Icon(painterResource(R.drawable.ic_up), "Back") }
+            Column(Modifier.weight(1f)) {
+                Text("Duplicates", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    "${scan.groups.size} groups · similar name, same size",
+                    fontSize = 12.sp, color = Dim, maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        HorizontalDivider(color = Faint)
+
+        LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+            scan.groups.forEach { g ->
+                item(key = "group:" + g.files[0].path) {
+                    Text(
+                        "${Storage.formatSize(g.size)} · ${g.files.size} files",
+                        Modifier.padding(start = 20.dp, top = 16.dp, bottom = 4.dp),
+                        fontSize = 12.sp, color = Dim
+                    )
+                }
+                items(g.files, key = { it.path }) { f ->
+                    val on = f in selected
+                    Row(
+                        Modifier.fillMaxWidth().clickable { onToggle(f) }
+                            .padding(horizontal = 20.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            painterResource(if (on) R.drawable.ic_checked else R.drawable.ic_unchecked), null,
+                            Modifier.size(22.dp), tint = if (on) Color.White else Dim
+                        )
+                        Spacer(Modifier.width(18.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(f.name, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                f.parentFile?.relativeTo(scan.root)?.path?.ifEmpty { null } ?: "this folder",
+                                fontSize = 12.sp, color = Dim, maxLines = 1, overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        BottomBar(
+            if (selected.isEmpty()) "Tick the copies to delete"
+            else "${selected.size} selected · ${Storage.formatSize(bytes)}"
+        ) {
+            TextButton(enabled = selected.isNotEmpty(), onClick = { confirming = true }) { Text("Delete") }
+        }
+    }
+
+    if (confirming) {
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            containerColor = Panel,
+            title = { Text("Delete ${selected.size} files?") },
+            text = { Text("This frees ${Storage.formatSize(bytes)} and can't be undone.", color = Dim) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirming = false
+                    onDelete()
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { confirming = false }) { Text("Cancel") } }
+        )
     }
 }
 

@@ -100,7 +100,7 @@ object Storage {
         if (move) check(from.deleteRecursively()) { "copied, but couldn't remove the original" }
     }
 
-    private fun freeName(dir: File, name: String, isDir: Boolean): File {
+    fun freeName(dir: File, name: String, isDir: Boolean): File {
         val dot = if (isDir) -1 else name.lastIndexOf('.')
         val base = if (dot > 0) name.substring(0, dot) else name
         val ext = if (dot > 0) name.substring(dot) else ""

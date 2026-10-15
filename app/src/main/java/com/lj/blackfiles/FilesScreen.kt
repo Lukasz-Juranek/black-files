@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
@@ -49,9 +50,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
@@ -123,10 +126,14 @@ private fun Browser() {
     var busy by remember { mutableStateOf<String?>(null) }
     var dupes by remember { mutableStateOf<DupeScan?>(null) }
     var dupeSelection by remember { mutableStateOf(emptySet<File>()) }
+    // null = search bar closed; otherwise the current folder is filtered by name.
+    var query by remember { mutableStateOf<String?>(null) }
 
     // Scroll position per folder, so going back up lands where you were.
     val positions = remember { mutableMapOf<String?, Int>() }
     val listState = remember(dir) { LazyListState(positions[dir?.path] ?: 0) }
+    // Results get their own scroll state so closing the search returns to the folder's position.
+    val searchState = remember(dir, query) { LazyListState() }
 
     LaunchedEffect(dir, showHidden, sort, descending, reload) {
         val d = dir
@@ -136,8 +143,9 @@ private fun Browser() {
     }
 
     fun go(to: File?) {
-        positions[dir?.path] = listState.firstVisibleItemIndex
+        if (query == null) positions[dir?.path] = listState.firstVisibleItemIndex
         selected = emptySet()
+        query = null
         dir = to
     }
 
@@ -195,6 +203,7 @@ private fun Browser() {
     }
 
     BackHandler(enabled = dir != null && dupes == null) { up() }
+    BackHandler(enabled = query != null && dupes == null) { query = null }
     // Registered last, so while something is selected Back clears the selection first.
     BackHandler(enabled = selected.isNotEmpty() && dupes == null) { selected = emptySet() }
 
@@ -215,6 +224,8 @@ private fun Browser() {
 
     val d = dir
     val list = entries.takeIf { entriesDir == d }
+    val q = query?.trim().orEmpty()
+    val shown = if (q.isEmpty()) list else list?.filter { it.name.contains(q, ignoreCase = true) }
     val selecting = selected.isNotEmpty()
 
     Column(Modifier.fillMaxSize()) {
@@ -225,9 +236,16 @@ private fun Browser() {
             if (selecting) {
                 IconButton(onClick = { selected = emptySet() }) { Icon(painterResource(R.drawable.ic_close), "Clear selection") }
                 Text("${selected.size} selected", Modifier.weight(1f), fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                val all = list.orEmpty().map { it.file }.toSet()
+                val all = shown.orEmpty().map { it.file }.toSet()
                 TextButton(onClick = { selected = if (selected == all) emptySet() else all }) {
                     Text(if (selected == all) "None" else "All")
+                }
+            } else if (query != null && d != null) {
+                Icon(painterResource(R.drawable.ic_search), null, Modifier.padding(12.dp), tint = Dim)
+                SearchField(query.orEmpty(), { query = it }, "Search in ${d.name}", Modifier.weight(1f))
+                // First tap clears the text, second closes the search.
+                IconButton(onClick = { query = if (query.isNullOrEmpty()) null else "" }) {
+                    Icon(painterResource(R.drawable.ic_close), "Close search")
                 }
             } else {
                 if (d != null) {
@@ -244,6 +262,9 @@ private fun Browser() {
                     if (d != null) {
                         Text(d.path, fontSize = 12.sp, color = Dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
+                }
+                if (d != null) {
+                    IconButton(onClick = { query = "" }) { Icon(painterResource(R.drawable.ic_search), "Search") }
                 }
                 Box {
                     IconButton(onClick = { menuOpen = true }) { Icon(painterResource(R.drawable.ic_more), "Menu") }
@@ -320,10 +341,13 @@ private fun Browser() {
                         }
                     }
                 }
-                list == null -> {}
-                list.isEmpty() -> Text("Empty folder", Modifier.align(Alignment.Center), color = Dim)
-                else -> LazyColumn(Modifier.fillMaxSize(), state = listState) {
-                    items(list, key = { it.file.path }) { e ->
+                shown == null -> {}
+                shown.isEmpty() -> Text(
+                    if (list.isNullOrEmpty()) "Empty folder" else "Nothing matches \"$q\"",
+                    Modifier.align(Alignment.Center), color = Dim
+                )
+                else -> LazyColumn(Modifier.fillMaxSize(), state = if (query == null) listState else searchState) {
+                    items(shown, key = { it.file.path }) { e ->
                         EntryRow(
                             e,
                             selection = if (selecting) e.file in selected else null,
@@ -492,6 +516,26 @@ private fun BottomBar(label: String, buttons: @Composable () -> Unit) {
         Text(label, Modifier.weight(1f), color = Dim, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         buttons()
     }
+}
+
+@Composable
+private fun SearchField(value: String, onChange: (String) -> Unit, hint: String, modifier: Modifier = Modifier) {
+    val focus = remember { FocusRequester() }
+    BasicTextField(
+        value, onChange,
+        modifier.focusRequester(focus).padding(vertical = 12.dp),
+        singleLine = true,
+        textStyle = TextStyle(color = Color.White, fontSize = 18.sp),
+        cursorBrush = SolidColor(Color.White),
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        decorationBox = { field ->
+            Box {
+                if (value.isEmpty()) Text(hint, color = Dim, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                field()
+            }
+        }
+    )
+    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
 }
 
 @Composable

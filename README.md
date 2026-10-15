@@ -11,7 +11,8 @@ A minimal black Android file explorer.
   similar name, like `photo.jpg`, `photo (1).jpg`, `photo - Copy.jpg`, `photo_2.jpg` or `Kopia photo.jpg`. The copies come pre-ticked
   and you review the list before anything is deleted
 - Sort bar: **Name / Date / Size**. Tap the active one again to flip ↑/↓
-- **Search** (🔍 in the title bar) filters the current folder by name as you type. **All** then selects only the matches. Back or ✕ closes it
+- **Search** (🔍 in the title bar) finds files and folders by name in the current folder and all its subfolders as you type.
+  Each result shows which subfolder it's in. It stops at 500 matches. **All** then selects only the matches. Back or ✕ closes it
 - New folder, show/hide hidden files
 - Remembers the last folder and where you were scrolled in each folder
 

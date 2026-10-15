@@ -63,6 +63,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -87,6 +89,9 @@ fun FilesTheme(content: @Composable () -> Unit) {
         CompositionLocalProvider(LocalContentColor provides Color.White, content = content)
     }
 }
+
+/** Search stops after this many matches so a whole-storage search stays quick. */
+private const val SEARCH_LIMIT = 500
 
 private class Clip(val files: List<File>, val move: Boolean) {
     val label get() = files.singleOrNull()?.name ?: "${files.size} items"
@@ -126,8 +131,10 @@ private fun Browser() {
     var busy by remember { mutableStateOf<String?>(null) }
     var dupes by remember { mutableStateOf<DupeScan?>(null) }
     var dupeSelection by remember { mutableStateOf(emptySet<File>()) }
-    // null = search bar closed; otherwise the current folder is filtered by name.
+    // null = search bar closed; otherwise the current folder and its subfolders are searched by name.
     var query by remember { mutableStateOf<String?>(null) }
+    var results by remember { mutableStateOf<List<Entry>?>(null) }
+    var searching by remember { mutableStateOf(false) }
 
     // Scroll position per folder, so going back up lands where you were.
     val positions = remember { mutableMapOf<String?, Int>() }
@@ -140,6 +147,22 @@ private fun Browser() {
         Prefs.setLastPath(ctx, d?.path)
         entries = if (d == null) null else withContext(Dispatchers.IO) { Storage.list(d, showHidden, sort, descending) }
         entriesDir = d
+    }
+
+    val q = query?.trim().orEmpty()
+    LaunchedEffect(dir, q, showHidden, sort, descending, reload) {
+        val d = dir
+        if (d == null || q.isEmpty()) {
+            results = null
+            searching = false
+            return@LaunchedEffect
+        }
+        searching = true
+        delay(300) // wait for typing to pause
+        results = withContext(Dispatchers.IO) {
+            Storage.search(d, q, showHidden, sort, descending, SEARCH_LIMIT) { isActive }
+        }
+        searching = false
     }
 
     fun go(to: File?) {
@@ -224,8 +247,7 @@ private fun Browser() {
 
     val d = dir
     val list = entries.takeIf { entriesDir == d }
-    val q = query?.trim().orEmpty()
-    val shown = if (q.isEmpty()) list else list?.filter { it.name.contains(q, ignoreCase = true) }
+    val shown = if (q.isEmpty()) list else results
     val selecting = selected.isNotEmpty()
 
     Column(Modifier.fillMaxSize()) {
@@ -314,7 +336,17 @@ private fun Browser() {
                     )
                 }
                 Spacer(Modifier.weight(1f))
-                Text(
+                val found = results
+                if (q.isNotEmpty()) Text(
+                    when {
+                        searching -> "Searching…"
+                        found == null -> ""
+                        found.size >= SEARCH_LIMIT -> "$SEARCH_LIMIT+ found"
+                        else -> "${found.size} found"
+                    },
+                    Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    fontSize = 14.sp, color = Dim
+                ) else Text(
                     "Duplicates",
                     Modifier.clickable { findDuplicates(d) }.padding(horizontal = 12.dp, vertical = 8.dp),
                     fontSize = 14.sp, color = Dim
@@ -343,7 +375,10 @@ private fun Browser() {
                 }
                 shown == null -> {}
                 shown.isEmpty() -> Text(
-                    if (list.isNullOrEmpty()) "Empty folder" else "Nothing matches \"$q\"",
+                    when {
+                        q.isNotEmpty() -> if (searching) "" else "Nothing matches \"$q\""
+                        else -> "Empty folder"
+                    },
                     Modifier.align(Alignment.Center), color = Dim
                 )
                 else -> LazyColumn(Modifier.fillMaxSize(), state = if (query == null) listState else searchState) {
@@ -368,7 +403,7 @@ private fun Browser() {
         val c = clip
         when {
             selecting -> {
-                val files = list.orEmpty().filter { it.file in selected }
+                val files = (list.orEmpty() + results.orEmpty()).distinctBy { it.file }.filter { it.file in selected }
                 val single = files.singleOrNull()
                 HorizontalDivider(color = Faint)
                 Row(

@@ -52,27 +52,58 @@ object Storage {
 
     /** Folders first, then files, in the chosen order. */
     fun list(dir: File, showHidden: Boolean, sort: Sort, descending: Boolean): List<Entry> {
-        val dates = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+        val dates = dates()
         val entries = (dir.listFiles() ?: emptyArray())
             .filter { showHidden || !it.name.startsWith(".") }
+            .map { entry(it, dates, "") }
+        return entries.sortedWith(order(sort, descending))
+    }
+
+    /**
+     * Files and folders anywhere under [dir] whose name contains [query]. Stops after [limit] matches,
+     * or as soon as [keepGoing] turns false. Each entry's details say which subfolder it's in.
+     */
+    fun search(
+        dir: File, query: String, showHidden: Boolean, sort: Sort, descending: Boolean,
+        limit: Int, keepGoing: () -> Boolean,
+    ): List<Entry> {
+        val dates = dates()
+        fun visible(f: File) = showHidden || f == dir || !f.name.startsWith(".")
+        val found = dir.walkTopDown()
+            .onEnter { visible(it) && keepGoing() }
+            .filter { it != dir && visible(it) && it.name.contains(query, ignoreCase = true) }
+            .takeWhile { keepGoing() }
+            .take(limit)
             .map { f ->
-                val modified = f.lastModified()
-                val date = dates.format(Date(modified))
-                if (f.isDirectory) {
-                    val n = f.list()?.size ?: 0
-                    Entry(f, true, 0, modified, "$n item${if (n == 1) "" else "s"} · $date")
-                } else {
-                    val size = f.length()
-                    Entry(f, false, size, modified, "${formatSize(size)} · $date")
-                }
+                val where = f.parentFile?.relativeTo(dir)?.path?.ifEmpty { null } ?: dir.name
+                entry(f, dates, "in $where · ")
             }
+            .toList()
+        return found.sortedWith(order(sort, descending))
+    }
+
+    private fun dates() = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+
+    private fun entry(f: File, dates: DateFormat, prefix: String): Entry {
+        val modified = f.lastModified()
+        val date = dates.format(Date(modified))
+        return if (f.isDirectory) {
+            val n = f.list()?.size ?: 0
+            Entry(f, true, 0, modified, "$prefix$n item${if (n == 1) "" else "s"} · $date")
+        } else {
+            val size = f.length()
+            Entry(f, false, size, modified, "$prefix${formatSize(size)} · $date")
+        }
+    }
+
+    private fun order(sort: Sort, descending: Boolean): Comparator<Entry> {
         val byName = compareBy<Entry, String>(String.CASE_INSENSITIVE_ORDER) { it.name }
         val order = when (sort) {
             Sort.NAME -> byName
             Sort.DATE -> compareBy<Entry> { it.modified }.then(byName)
             Sort.SIZE -> compareBy<Entry> { it.size }.then(byName)
         }
-        return entries.sortedWith(compareBy<Entry> { !it.isDir }.then(if (descending) order.reversed() else order))
+        return compareBy<Entry> { !it.isDir }.then(if (descending) order.reversed() else order)
     }
 
     fun mkdir(parent: File, name: String) {
